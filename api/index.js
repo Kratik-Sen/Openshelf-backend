@@ -2,9 +2,9 @@ import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
 import dotenv from "dotenv";
-import pdfRoutes from "./routes/pdfRoutes.js";
-import authRoutes from "./routes/authRoutes.js";
-import paymentRoutes from "./routes/paymentRoutes.js";
+import pdfRoutes from "../routes/pdfRoutes.js";
+import authRoutes from "../routes/authRoutes.js";
+import paymentRoutes from "../routes/paymentRoutes.js";
 
 dotenv.config();
 
@@ -32,13 +32,5 @@ app.use("/", pdfRoutes);
 app.use("/", authRoutes);
 app.use("/", paymentRoutes);
 
-// Export app for Vercel serverless functions
 export default app;
 
-// Only listen on port if not in Vercel environment
-if (process.env.VERCEL !== "1") {
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, () => {
-    console.log(`Server Started on port ${PORT}`);
-  });
-}
