@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import pdfRoutes from "./routes/pdfRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
-import redis from "./config/redis.js"; // Initialize Redis connection
+// import redis from "./config/redis.js"; // Initialize Redis connection
 
 dotenv.config();
 
