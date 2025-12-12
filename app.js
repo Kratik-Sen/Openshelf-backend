@@ -5,14 +5,19 @@ import dotenv from "dotenv";
 import pdfRoutes from "./routes/pdfRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import redis from "./config/redis.js"; // Initialize Redis connection
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://openshelf-frontend.vercel.app"
+];
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: allowedOrigins,
     credentials: true,
   })
 );

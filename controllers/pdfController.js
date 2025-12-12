@@ -2,6 +2,16 @@ import s3, { bucketName, region } from "../config/s3.js";
 import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import Pdf from "../models/pdfDetails.js";
 import fs from "fs";
+import {
+  getCache,
+  setCache,
+  getCacheBuffer,
+  setCacheBuffer,
+  deleteCache,
+  deleteCachePattern,
+  cacheKeys,
+  CACHE_TTL,
+} from "../utils/cache.js";
 
 export const uploadFiles = async (req, res) => {
   try {
@@ -55,6 +65,10 @@ export const uploadFiles = async (req, res) => {
       await fs.promises.unlink(coverFile.path);
     } catch {}
 
+    // Invalidate cache after upload
+    await deleteCache(cacheKeys.booksList());
+    console.log("🗑️  Invalidated books list cache after upload");
+
     res.send({ status: "ok", data: created });
   } catch (error) {
     console.error("Upload error:", error);
@@ -64,10 +78,25 @@ export const uploadFiles = async (req, res) => {
 
 export const getFiles = async (req, res) => {
   try {
+    const cacheKey = cacheKeys.booksList();
+    
+    // Try to get from cache first
+    const cachedData = await getCache(cacheKey);
+    if (cachedData) {
+      console.log("📦 Serving books list from Redis cache");
+      return res.send({ status: "ok", data: cachedData });
+    }
+
+    // If not in cache, fetch from MongoDB
+    console.log("💾 Fetching books list from MongoDB");
     const data = await Pdf.find({});
-    //  console.log("Fetched from MongoDB:", data); // <-- ADD THIS
+    
+    // Cache the result for future requests
+    await setCache(cacheKey, data, CACHE_TTL.BOOKS_LIST);
+    
     res.send({ status: "ok", data });
   } catch (error) {
+    console.error("Get files error:", error);
     res.status(500).json({ status: "error", error });
   }
 };
@@ -75,6 +104,19 @@ export const getFiles = async (req, res) => {
 export const getFilePdf = async (req, res) => {
   try {
     const { id } = req.params;
+    const cacheKey = cacheKeys.pdfFile(id);
+
+    // Try to get from cache first
+    const cachedPdf = await getCacheBuffer(cacheKey);
+    if (cachedPdf) {
+      console.log(`📦 Serving PDF ${id} from Redis cache`);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Length", cachedPdf.length);
+      return res.send(cachedPdf);
+    }
+
+    // If not in cache, fetch from S3
+    console.log(`💾 Fetching PDF ${id} from S3`);
     const doc = await Pdf.findById(id);
     if (!doc || !doc.pdf) {
       return res
@@ -89,9 +131,19 @@ export const getFilePdf = async (req, res) => {
       new GetObjectCommand({ Bucket: bucketName, Key: key })
     );
 
+    // Convert stream to buffer for caching
+    const chunks = [];
+    for await (const chunk of result.Body) {
+      chunks.push(chunk);
+    }
+    const pdfBuffer = Buffer.concat(chunks);
+
+    // Cache the PDF buffer
+    await setCacheBuffer(cacheKey, pdfBuffer, CACHE_TTL.PDF_FILE);
+
     res.setHeader("Content-Type", result.ContentType || "application/pdf");
-    // result.Body is a stream
-    result.Body.pipe(res);
+    res.setHeader("Content-Length", pdfBuffer.length);
+    res.send(pdfBuffer);
   } catch (error) {
     console.error("Stream PDF error:", error);
     res.status(500).json({ status: "error", message: "Failed to load PDF" });
@@ -151,6 +203,18 @@ export const updateFile = async (req, res) => {
     }
 
     await doc.save();
+
+    // Invalidate relevant caches after update
+    await deleteCache(cacheKeys.booksList());
+    await deleteCache(cacheKeys.bookDetail(id));
+    if (pdfFile) {
+      await deleteCache(cacheKeys.pdfFile(id));
+    }
+    if (coverFile) {
+      await deleteCache(cacheKeys.coverImage(id));
+    }
+    console.log(`🗑️  Invalidated caches for book ${id} after update`);
+
     res.json({ status: "ok", data: doc });
   } catch (e) {
     console.error("Update error:", e);
@@ -167,6 +231,14 @@ export const deleteFile = async (req, res) => {
     if (String(doc.owner) !== String(req.user.id))
       return res.status(403).json({ status: "error", message: "Forbidden" });
     await Pdf.deleteOne({ _id: id });
+
+    // Invalidate all caches related to this book
+    await deleteCache(cacheKeys.booksList());
+    await deleteCache(cacheKeys.bookDetail(id));
+    await deleteCache(cacheKeys.pdfFile(id));
+    await deleteCache(cacheKeys.coverImage(id));
+    console.log(`🗑️  Invalidated all caches for book ${id} after delete`);
+
     res.json({ status: "ok" });
   } catch (e) {
     res.status(500).json({ status: "error", message: "Delete failed" });
