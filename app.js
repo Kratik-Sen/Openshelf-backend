@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import pdfRoutes from "./routes/pdfRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
+import dns from "dns";
 // import redis from "./config/redis.js"; // Initialize Redis connection
 
 dotenv.config();
@@ -21,7 +22,10 @@ app.use(
     credentials: true,
   })
 );
-
+dns.setServers([
+  '1.1.1.1',
+  '8.8.8.8',
+])
 mongoose
   .connect(process.env.MONGO_URL, {
     useNewUrlParser: true,
