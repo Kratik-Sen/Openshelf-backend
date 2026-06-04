@@ -1,7 +1,10 @@
-import s3, { bucketName, region } from "../config/s3.js";
-import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import Pdf from "../models/pdfDetails.js";
 import fs from "fs";
+import {
+  getPdfBufferFromStorage,
+  uploadBookCover,
+  uploadBookPdf,
+} from "../utils/storage.js";
 import {
   getCache,
   setCache,
@@ -12,6 +15,14 @@ import {
   cacheKeys,
   CACHE_TTL,
 } from "../utils/cache.js";
+
+const cleanupTempFile = async (file) => {
+  if (!file?.path) return;
+
+  try {
+    await fs.promises.unlink(file.path);
+  } catch {}
+};
 
 export const uploadFiles = async (req, res) => {
   try {
@@ -26,44 +37,19 @@ export const uploadFiles = async (req, res) => {
         .json({ status: "error", message: "Missing file or image" });
     }
 
-    const pdfKey = `pdf-uploads/${Date.now()}-${pdfFile.originalname}`;
-    const coverKey = `book-covers/${Date.now()}-${coverFile.originalname}`;
-
-    const pdfBuffer = await fs.promises.readFile(pdfFile.path);
-    const coverBuffer = await fs.promises.readFile(coverFile.path);
-
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucketName,
-        Key: pdfKey,
-        Body: pdfBuffer,
-        ContentType: "application/pdf",
-      })
-    );
-
-    await s3.send(
-      new PutObjectCommand({
-        Bucket: bucketName,
-        Key: coverKey,
-        Body: coverBuffer,
-        ContentType: coverFile.mimetype || "image/jpeg",
-      })
-    );
+    const pdfUrl = await uploadBookPdf(pdfFile);
+    const coverUrl = await uploadBookCover(coverFile);
 
     const created = await Pdf.create({
       title,
       category, // ➕ Store category
-      pdf: `https://${bucketName}.s3.${region}.amazonaws.com/${pdfKey}`,
-      coverImage: `https://${bucketName}.s3.${region}.amazonaws.com/${coverKey}`,
+      pdf: pdfUrl,
+      coverImage: coverUrl,
       owner: req.user?.id,
     });
 
-    try {
-      await fs.promises.unlink(pdfFile.path);
-    } catch {}
-    try {
-      await fs.promises.unlink(coverFile.path);
-    } catch {}
+    await cleanupTempFile(pdfFile);
+    await cleanupTempFile(coverFile);
 
     // Invalidate cache after upload
     await deleteCache(cacheKeys.booksList());
@@ -115,8 +101,8 @@ export const getFilePdf = async (req, res) => {
       return res.send(cachedPdf);
     }
 
-    // If not in cache, fetch from S3
-    console.log(`💾 Fetching PDF ${id} from S3`);
+    // If not in cache, fetch from storage
+    console.log(`💾 Fetching PDF ${id} from storage`);
     const doc = await Pdf.findById(id);
     if (!doc || !doc.pdf) {
       return res
@@ -124,24 +110,14 @@ export const getFilePdf = async (req, res) => {
         .json({ status: "error", message: "PDF not found" });
     }
 
-    const url = new URL(doc.pdf);
-    const key = decodeURIComponent(url.pathname.slice(1));
-
-    const result = await s3.send(
-      new GetObjectCommand({ Bucket: bucketName, Key: key })
+    const { buffer: pdfBuffer, contentType } = await getPdfBufferFromStorage(
+      doc.pdf
     );
-
-    // Convert stream to buffer for caching
-    const chunks = [];
-    for await (const chunk of result.Body) {
-      chunks.push(chunk);
-    }
-    const pdfBuffer = Buffer.concat(chunks);
 
     // Cache the PDF buffer
     await setCacheBuffer(cacheKey, pdfBuffer, CACHE_TTL.PDF_FILE);
 
-    res.setHeader("Content-Type", result.ContentType || "application/pdf");
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", pdfBuffer.length);
     res.send(pdfBuffer);
   } catch (error) {
@@ -168,38 +144,14 @@ export const updateFile = async (req, res) => {
 
     // Update PDF if provided
     if (pdfFile) {
-      const pdfKey = `pdf-uploads/${Date.now()}-${pdfFile.originalname}`;
-      const pdfBuffer = await fs.promises.readFile(pdfFile.path);
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: bucketName,
-          Key: pdfKey,
-          Body: pdfBuffer,
-          ContentType: "application/pdf",
-        })
-      );
-      doc.pdf = `https://${bucketName}.s3.${region}.amazonaws.com/${pdfKey}`;
-      try {
-        await fs.promises.unlink(pdfFile.path);
-      } catch {}
+      doc.pdf = await uploadBookPdf(pdfFile);
+      await cleanupTempFile(pdfFile);
     }
 
     // Update cover image if provided
     if (coverFile) {
-      const coverKey = `book-covers/${Date.now()}-${coverFile.originalname}`;
-      const coverBuffer = await fs.promises.readFile(coverFile.path);
-      await s3.send(
-        new PutObjectCommand({
-          Bucket: bucketName,
-          Key: coverKey,
-          Body: coverBuffer,
-          ContentType: coverFile.mimetype || "image/jpeg",
-        })
-      );
-      doc.coverImage = `https://${bucketName}.s3.${region}.amazonaws.com/${coverKey}`;
-      try {
-        await fs.promises.unlink(coverFile.path);
-      } catch {}
+      doc.coverImage = await uploadBookCover(coverFile);
+      await cleanupTempFile(coverFile);
     }
 
     await doc.save();
